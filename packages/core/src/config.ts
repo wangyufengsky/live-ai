@@ -57,6 +57,10 @@ export const config = {
 
   /** 主动找人聊天的上限：每人每天最多几条 */
   dmPerPersonPerDay: 3,
+  /** 来访者（门铃）的上限：每小时、每天最多几条；她没回之前最多连发几条 */
+  visitorPerHour: 20,
+  visitorPerDay: 100,
+  visitorBacklog: 5,
   /** 每次醒来带进上下文的最近事件条数（短期记忆） */
   recentEvents: 40,
 

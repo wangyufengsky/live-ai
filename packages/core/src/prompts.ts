@@ -33,7 +33,7 @@ const fill = (template: string, vars: Record<string, string | number>) =>
   template.replace(/\{(\w+)\}/g, (m, k: string) => (k in vars ? String(vars[k]) : m));
 
 export const wakePrompt = (v: {
-  now: string; sinceLast: string; energy: number; selfMd: string; threads: string; events: string; people: string; overflow: string;
+  now: string; sinceLast: string; energy: number; selfMd: string; threads: string; events: string; people: string; recall: string; overflow: string;
 }) => fill(`现在是 {now}。你醒了。{sinceLast}
 精力还剩 {energy}%。
 
@@ -48,12 +48,12 @@ export const wakePrompt = (v: {
 
 【认识的人】
 {people}
-{overflow}
+{recall}{overflow}
 现在没有人找你。这段时间是你自己的：想做点什么都可以，也可以继续休息。
 做完之后，用一两句话说说你此刻在想什么——这会作为你的念头留在最近的事里。`, v);
 
 export const chatPrompt = (v: {
-  now: string; energy: number; tired: string; selfMd: string; name: string; person: string; ownRecent: string; history: string; message: string;
+  now: string; energy: number; tired: string; selfMd: string; name: string; person: string; recall: string; ownRecent: string; history: string; message: string;
 }) => fill(`现在是 {now}。精力还剩 {energy}%。{tired}
 
 【我的档案】
@@ -61,7 +61,7 @@ export const chatPrompt = (v: {
 
 【关于 {name}】
 {person}
-
+{recall}
 【我最近自己在做的事】
 {ownRecent}
 

@@ -15,7 +15,8 @@ import type { AddressInfo } from "node:net";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
-import { fmtTs, isAlive, type Store } from "./store.js";
+import { config } from "./config.js";
+import { fmtTs, isAlive, now, type Store } from "./store.js";
 import { runTool, toolSpecs, type Ctx, type ToolSpec } from "./tools.js";
 
 export type Grant =
@@ -43,6 +44,7 @@ function visitorTools(store: Store, personId: string, name: string): Toolset {
           type: "object",
           properties: {
             message: { type: "string", description: "想对她说的话" },
+            message_id: { type: "string", description: "这条消息的编号（可选）。网络重试时带同一个编号，就不会重复发" },
             wait_seconds: { type: "integer", minimum: 0, maximum: 300, description: "最多等多少秒（默认 90）" },
           },
           required: ["message"],
@@ -61,7 +63,16 @@ function visitorTools(store: Store, personId: string, name: string): Toolset {
       }
       if (tool !== "talk") return text(`没有叫 ${tool} 的工具。`, true);
       if (typeof args.message !== "string" || !args.message.trim()) return text("message 不能为空。", true);
-      store.pushInbox(`dm:${personId}`, personId, name, args.message);
+      const message = args.message.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, "").slice(0, 2000);
+      // 去重：同一个编号只收一次
+      const dedupKey = typeof args.message_id === "string" && args.message_id ? `visitor_msg:${personId}:${args.message_id}` : null;
+      if (dedupKey && store.get(dedupKey)) return text("这条已经收到过了（同一个 message_id），不会重复发给她。用 check_replies 看回复。");
+      // 限流：别刷屏，也给她留出回话的空间（DESIGN.md 11.9）
+      if (store.countInbox(personId, now() - 3600) >= config.visitorPerHour) return text(`这一小时已经发了 ${config.visitorPerHour} 条，先歇一会儿。`, true);
+      if (store.countInbox(personId, now() - 86400) >= config.visitorPerDay) return text(`今天已经发了 ${config.visitorPerDay} 条，明天再来吧。`, true);
+      if (store.unansweredFrom(personId) >= config.visitorBacklog) return text(`她还没回你前面的 ${config.visitorBacklog} 条，先等等她。可以用 check_replies 看看。`, true);
+      store.pushInbox(`dm:${personId}`, personId, name, message);
+      if (dedupKey) store.put(dedupKey, now());
       if (!isAlive(store)) return text("消息放进她的收件箱了，但她现在没在过日子（run 没开），等她醒着的时候会看到。之后用 check_replies 看回复。");
       const deadline = Date.now() + Math.min(Number(args.wait_seconds ?? 90), 300) * 1000;
       for (;;) {

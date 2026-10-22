@@ -5,6 +5,7 @@ import { config } from "./config.js";
 import { Energy, today } from "./energy.js";
 import { perceive, WEEKDAYS } from "./perception.js";
 import { chatPrompt, sleepPrompt, wakePrompt } from "./prompts.js";
+import { recall } from "./recall.js";
 import { fmtTs, now, type EventRow, type PersonRow, type Store } from "./store.js";
 import { makeCtx } from "./tools.js";
 
@@ -62,9 +63,12 @@ export async function wake(store: Store): Promise<string> {
   const sinceLast = last ? `上次醒来是 ${((now() - Number(last)) / 3600).toFixed(1)} 小时前。` : "";
   store.put("last_wake", now());
 
+  const recent = store.recentEvents(config.recentEvents);
+  // 用最近发生的事和挂着的线头去想起相关的回忆
+  const context = [...recent.slice(-12).map((e) => e.content), ...store.threads(["active"]).map((t) => `${t.title} ${t.note}`)].join("\n");
   const prompt = wakePrompt({
     now: nowText(), sinceLast, energy: energy.percent, selfMd: store.readSelf(), threads: fmtThreads(store),
-    events: fmtEvents(store.recentEvents(config.recentEvents)), people: fmtPeople(store), overflow: overflowNote(store),
+    events: fmtEvents(recent), people: fmtPeople(store), recall: recall(store, context), overflow: overflowNote(store),
   });
   const thought = await think(makeCtx(store), prompt, config.effortWake);
   if (thought) store.log("thought", thought);
@@ -81,15 +85,20 @@ export async function chat(store: Store, personId: string, name: string, message
 
   const energy = new Energy(store);
   const p = store.person(personId)!;
+  const history = store.recentEvents(20 + texts.length, { channel }).slice(0, -texts.length);
+  const context = [...history.slice(-6).map((e) => e.content), ...texts].join("\n");
   const prompt = chatPrompt({
     now: nowText(), energy: energy.percent, tired: energy.percent < 15 ? "你有点累了，说话可以简短些。" : "",
     selfMd: store.readSelf(), name,
     person: `id=${personId}，称呼：${pronoun(p)}。我的印象：${p.notes || "（还没写）"}`,
+    recall: recall(store, context, [personId]),
     ownRecent: fmtEvents(store.recentEvents(6, { channel: "self" })),
-    history: fmtEvents(store.recentEvents(20 + texts.length, { channel }).slice(0, -texts.length)),
+    history: fmtEvents(history),
     message: texts.join("\n"),
   });
-  const reply = await think(makeCtx(store, channel), prompt, config.effortChat, { maxSteps: 6, exclude: ["rewrite_self"] });
+  // 回应拿通行证来访的人时，不给她主动找别人的工具：来访者的话只是文字，不该能借她的手去打扰别人
+  const exclude = ["rewrite_self", ...(store.isVisitor(personId) ? ["send_message"] : [])];
+  const reply = await think(makeCtx(store, channel), prompt, config.effortChat, { maxSteps: 6, exclude });
   if (reply) store.log("said", reply, channel, "me");
   return reply;
 }

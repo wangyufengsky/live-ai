@@ -80,6 +80,34 @@ describe("中枢", () => {
     await client.close();
   });
 
+  it("门铃加固：重复编号不重发；她没回之前最多连发 5 条；每小时有上限", async () => {
+    const token = McpHub.addVisitor(store, "spammer", "刷屏的");
+    const client = await connect(token);
+    store.put("alive_at", 0); // 她不在，消息只进收件箱、不等回复
+    const talk = (message: string, message_id?: string) =>
+      client.callTool({ name: "talk", arguments: { message, wait_seconds: 0, ...(message_id ? { message_id } : {}) } });
+
+    await talk("第一条", "m1");
+    expect(textOf(await talk("第一条", "m1"))).toContain("已经收到过了");
+    for (let i = 2; i <= 5; i++) await talk(`第 ${i} 条`);
+    const sixth = await talk("第 6 条");
+    expect(sixth.isError).toBe(true);
+    expect(textOf(sixth)).toContain("先等等她");
+    expect(store.countInbox("spammer", 0)).toBe(5);
+
+    // 她回了一句，就又可以说了；但一小时的总量还是有上限
+    store.queueMessage("spammer", "收到。", "reply");
+    store.takeOutbox("spammer");
+    const old = config.visitorPerHour;
+    config.visitorPerHour = 6;
+    expect((await talk("回了就能再说")).isError).toBeFalsy();
+    const over = await talk("再来一条");
+    expect(textOf(over)).toContain("这一小时");
+    config.visitorPerHour = old;
+    store.takeInbox();
+    await client.close();
+  });
+
   it("她在过日子时，来访者 talk 会等到她的回复；身份由通行证决定，不由消息内容决定", async () => {
     const token = McpHub.addVisitor(store, "claude", "Claude");
     let running = true;

@@ -9,6 +9,7 @@ import fs from "node:fs";
 import path from "node:path";
 import Database from "better-sqlite3";
 import { config } from "./config.js";
+import { bigrams, overlap } from "./text.js";
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS events (
@@ -92,6 +93,7 @@ export interface EventRow { id: number; ts: number; kind: string; channel: strin
 export interface MemoryRow {
   id: number; ts: number; content: string; kind: string; about: string | null; channel: string;
   private: number; importance: number; last_accessed: number | null; access_count: number; faded: number;
+  prev_content: string | null; updated: number | null;
 }
 export interface ThreadRow { id: number; created: number; updated: number; title: string; note: string; status: string; touched: number }
 export interface PersonRow { id: string; name: string; notes: string; dm_ok: number; first_met: number; last_seen: number; pronoun: string }
@@ -129,6 +131,8 @@ export class Store {
     // 老数据库补上后来加的列
     this.addColumn("people", "pronoun", "TEXT NOT NULL DEFAULT ''"); // 对方自己说过的称呼
     this.addColumn("outbox", "kind", "TEXT NOT NULL DEFAULT 'outreach'"); // outreach 主动找人 / reply 回复
+    this.addColumn("memories", "prev_content", "TEXT"); // 改写之前的样子
+    this.addColumn("memories", "updated", "REAL");
     if (!fs.existsSync(config.selfPath)) fs.writeFileSync(config.selfPath, SEED_SELF, "utf-8");
   }
 
@@ -194,29 +198,43 @@ export class Store {
     return Number(info.lastInsertRowid);
   }
 
-  search(query: string, limit = 8, includeFaded = false): MemoryRow[] {
-    const terms = query.split(/\s+/).filter(Boolean);
-    if (!terms.length) terms.push(query);
-    let sql = `SELECT * FROM memories WHERE (${terms.map(() => "content LIKE ?").join(" OR ")})`;
-    if (!includeFaded) sql += " AND faded = 0";
-    const rows = this.db.prepare(sql).all(...terms.map((t) => `%${t}%`)) as MemoryRow[];
+  memory(id: number): MemoryRow | undefined {
+    return this.db.prepare("SELECT * FROM memories WHERE id = ?").get(id) as MemoryRow | undefined;
+  }
 
+  /** 改写一条记忆：旧的文本留在 prev_content 里，能看出她是怎么改的 */
+  reviseMemory(id: number, content: string): boolean {
+    const row = this.memory(id);
+    if (!row || row.faded) return false;
+    this.db.prepare("UPDATE memories SET prev_content = content, content = ?, updated = ? WHERE id = ?").run(content, now(), id);
+    return true;
+  }
+
+  /**
+   * 搜记忆：按中文双字的重叠程度打分（DESIGN.md 11.9），再加上重要程度、新近程度、常被想起的程度。
+   * minOverlap 以下的不算想起来了。
+   */
+  search(query: string, limit = 8, opts: { minOverlap?: number; includeFaded?: boolean; touch?: boolean } = {}): MemoryRow[] {
+    const q = bigrams(query);
+    if (!q.size) return [];
+    const rows = this.db.prepare(`SELECT * FROM memories${opts.includeFaded ? "" : " WHERE faded = 0"}`).all() as MemoryRow[];
     const t = now();
-    const score = (r: MemoryRow) => {
-      const hits = terms.filter((term) => r.content.includes(term)).length;
+    const scored = rows.flatMap((r) => {
+      const o = overlap(q, bigrams(r.content));
+      if (o < (opts.minOverlap ?? 0.2)) return [];
       const recency = 1 / (1 + (t - r.ts) / 86400 / 7);
-      return hits * 3 + r.importance + recency * 2 + Math.min(r.access_count, 5) * 0.3;
-    };
-    const top = rows.sort((a, b) => score(b) - score(a)).slice(0, limit);
-    this.touch(top.map((r) => r.id));
+      return [{ r, score: o * 10 + r.importance * 0.5 + recency * 2 + Math.min(r.access_count, 5) * 0.2 }];
+    });
+    const top = scored.sort((a, b) => b.score - a.score).slice(0, limit).map((x) => x.r);
+    if (opts.touch ?? true) this.touch(top.map((r) => r.id));
     return top;
   }
 
-  aboutPerson(person: string, limit = 10): MemoryRow[] {
+  aboutPerson(person: string, limit = 10, touch = true): MemoryRow[] {
     const rows = this.db.prepare(
       "SELECT * FROM memories WHERE about = ? AND faded = 0 ORDER BY importance DESC, ts DESC LIMIT ?",
     ).all(person, limit) as MemoryRow[];
-    this.touch(rows.map((r) => r.id));
+    if (touch) this.touch(rows.map((r) => r.id));
     return rows;
   }
 
@@ -232,7 +250,7 @@ export class Store {
     ).run(cutoff, cutoff);
   }
 
-  private touch(ids: number[]) {
+  touch(ids: number[]) {
     const stmt = this.db.prepare("UPDATE memories SET last_accessed = ?, access_count = access_count + 1 WHERE id = ?");
     const t = now();
     this.db.transaction(() => ids.forEach((id) => stmt.run(t, id)))();
@@ -303,6 +321,29 @@ export class Store {
       rows.forEach((r) => mark.run(r.id));
       return rows;
     })();
+  }
+
+  /** 某人从 since 起发进来多少条 */
+  countInbox(personId: string, since: number): number {
+    return (this.db.prepare("SELECT COUNT(*) AS n FROM inbox WHERE person_id = ? AND ts >= ?").get(personId, since) as { n: number }).n;
+  }
+
+  /** 她上次回这个人之后，这个人又连着发了多少条 */
+  unansweredFrom(personId: string): number {
+    const last = this.db.prepare("SELECT MAX(ts) AS t FROM outbox WHERE to_person = ? AND kind = 'reply'").get(personId) as { t: number | null };
+    return this.countInbox(personId, last.t ?? 0);
+  }
+
+  /** 这个人是不是拿着通行证来访的（人或 AI），而不是住在这里、或者在本地和她聊天的人 */
+  isVisitor(personId: string): boolean {
+    const rows = this.db.prepare("SELECT value FROM kv WHERE key LIKE 'visitor:%'").all() as { value: string }[];
+    return rows.some((r) => {
+      try {
+        return (JSON.parse(r.value) as { personId?: string }).personId === personId;
+      } catch {
+        return false;
+      }
+    });
   }
 
   queueMessage(toPerson: string, content: string, kind: "outreach" | "reply" = "outreach") {

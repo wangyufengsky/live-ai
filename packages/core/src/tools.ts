@@ -10,6 +10,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { config } from "./config.js";
 import { fmtTs, type MemoryRow, type Store } from "./store.js";
+import { memoryHints, writeBlocked } from "./text.js";
 import * as web from "./web.js";
 
 export interface Ctx {
@@ -32,10 +33,18 @@ function provenance(store: Store, r: MemoryRow): string {
   return who ? `（${who}私下跟我说的）` : "（私下听到的）";
 }
 
-const fmtMemory = (store: Store, r: MemoryRow) =>
+export const fmtMemory = (store: Store, r: MemoryRow) =>
   `#${r.id} ${fmtTs(r.ts)}${r.about ? ` (关于 ${r.about})` : ""}${provenance(store, r)}: ${r.content}`;
 
 const PRONOUN_UNKNOWN = "ta（对方没说过，不要猜）";
+
+/** 写进长期存储前过一遍：像指令、像密码的内容不存（抛出的错误会作为工具错误告诉她） */
+function guard(...texts: (string | undefined | null)[]) {
+  for (const t of texts) {
+    const reason = t ? writeBlocked(t) : null;
+    if (reason) throw new Error(reason);
+  }
+}
 
 const quiet = () => {
   const [start, end] = config.quietHours;
@@ -54,9 +63,9 @@ export const TOOLS: Record<string, ToolDef> = {
     },
   },
   remember: {
-    description: "把一件事写进长期记忆。只有记下来的事才会长久留下。",
+    description: "把一件事写进长期记忆。只有记下来的事才会长久留下。写的时候用名字，不要只写“他 / 她”；“明天”“下周三”写成具体日期——过些天再读，你会感谢现在的自己。",
     properties: {
-      content: { type: "string", description: "要记住的内容，用你自己的话写" },
+      content: { type: "string", description: "要记住的内容，用你自己的话写，写出人名和具体日期" },
       importance: { type: "integer", minimum: 1, maximum: 5, description: "对你来说有多重要，1-5" },
       kind: { type: "string", enum: ["event", "knowledge", "feeling", "person"] },
       about: { type: "string", description: "如果和某个人有关，填 ta 的 id" },
@@ -64,11 +73,25 @@ export const TOOLS: Record<string, ToolDef> = {
     },
     required: ["content"],
     fn: ({ store, channel }, a) => {
+      guard(a.content);
       const id = store.remember(a.content, {
         kind: a.kind ?? "event", about: a.about ?? null, channel,
         private: a.private ?? channel.startsWith("dm:"), importance: a.importance ?? 3,
       });
-      return `记下了（#${id}）。`;
+      const hints = memoryHints(a.content, store.people().map((p) => p.name));
+      return `记下了（#${id}）。` + (hints.length ? `\n提示：${hints.join("；")}。` : "");
+    },
+  },
+  revise_memory: {
+    description: "改写一条记忆：补上名字和日期、纠正记错的地方、或者你的看法变了。旧的写法会保留下来。",
+    properties: {
+      id: { type: "integer", description: "记忆的编号（search_memory 和回忆里 # 后面的数字）" },
+      content: { type: "string", description: "改写后完整的一句或一段" },
+    },
+    required: ["id", "content"],
+    fn: ({ store }, { id, content }) => {
+      guard(content);
+      return store.reviseMemory(Number(id), content) ? `改好了（#${id}），原来的写法留着。` : `没有 #${id} 这条记忆。`;
     },
   },
   recall_person: {
@@ -95,6 +118,7 @@ export const TOOLS: Record<string, ToolDef> = {
     required: ["person_id", "notes"],
     fn: ({ store }, { person_id, notes }) => {
       if (!store.person(person_id)) return `不认识 ${person_id}。`;
+      guard(notes);
       store.setPersonNotes(person_id, notes);
       return "印象更新了。";
     },
@@ -132,6 +156,7 @@ export const TOOLS: Record<string, ToolDef> = {
     properties: { content: { type: "string", description: "完整的新档案（markdown）" } },
     required: ["content"],
     fn: ({ store }, { content }) => {
+      guard(content);
       store.writeSelf(content);
       return "档案改好了，旧版本留在了历史里。";
     },
@@ -151,7 +176,10 @@ export const TOOLS: Record<string, ToolDef> = {
     description: "挂一个新线头：想以后继续琢磨、了解、去做的事。",
     properties: { title: { type: "string" }, note: { type: "string", description: "目前想到哪儿了" } },
     required: ["title"],
-    fn: ({ store }, { title, note }) => `新线头 #${store.addThread(title, note ?? "")}。`,
+    fn: ({ store }, { title, note }) => {
+      guard(title, note);
+      return `新线头 #${store.addThread(title, note ?? "")}。`;
+    },
   },
   update_thread: {
     description: "更新线头的进展，或者把它放下（dropped）、搁置（resting）、完成（done）。放下也完全没关系。",
@@ -163,6 +191,7 @@ export const TOOLS: Record<string, ToolDef> = {
     required: ["thread_id"],
     fn: ({ store }, { thread_id, note, status }) => {
       if (status && !["active", "resting", "dropped", "done"].includes(status)) return "status 只能是 active / resting / dropped / done。";
+      guard(note);
       return store.updateThread(Number(thread_id), note, status) ? "更新了。" : `没有 #${thread_id} 这个线头。`;
     },
   },
