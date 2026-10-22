@@ -1,0 +1,21 @@
+# 运行环境和依赖
+.venv/
+__pycache__/
+node_modules/
+dist/
+
+# 她的数据：记忆、档案、书、通行证……永远不进仓库
+data/
+backups/
+*.db
+*.db-wal
+*.db-shm
+*.token
+
+# 密钥和本机配置
+.env
+.env.*
+.claude/settings.local.json
+
+# 系统文件
+.DS_Store

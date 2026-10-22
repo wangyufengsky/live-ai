@@ -1,0 +1,30 @@
+{
+  "name": "@companion/core",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "她的核心：生活循环、记忆、感知、可替换的大脑。无界面，可以单独运行，也可以被 Electron app 拉起。",
+  "bin": {
+    "companion": "./dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc -p .",
+    "dev": "tsx src/cli.ts",
+    "test": "vitest run",
+    "typecheck": "tsc -p . --noEmit"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^1.1.0",
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "better-sqlite3": "^13.0.3",
+    "openai": "^7.42.0",
+    "undici": "^8.12.3"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^9.6.0",
+    "@types/node": "^26.6.5",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.5"
+  }
+}
