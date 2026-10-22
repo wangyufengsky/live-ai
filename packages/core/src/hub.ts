@@ -88,7 +88,7 @@ function visitorTools(store: Store, personId: string, name: string): Toolset {
 // ---------- 她自己的工具：记忆、档案、线头、书…… ----------
 
 function mindTools(g: Extract<Grant, { role: "mind" }>): Toolset {
-  const specs = toolSpecs(g.exclude, g.web);
+  const specs = toolSpecs(g.exclude, g.web, Boolean(g.ctx.world));
   const offered = new Set(specs.map((s) => s.name));
   return {
     specs,

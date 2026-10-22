@@ -93,7 +93,7 @@ export interface EventRow { id: number; ts: number; kind: string; channel: strin
 export interface MemoryRow {
   id: number; ts: number; content: string; kind: string; about: string | null; channel: string;
   private: number; importance: number; last_accessed: number | null; access_count: number; faded: number;
-  prev_content: string | null; updated: number | null;
+  prev_content: string | null; updated: number | null; present: string | null;
 }
 export interface ThreadRow { id: number; created: number; updated: number; title: string; note: string; status: string; touched: number }
 export interface PersonRow { id: string; name: string; notes: string; dm_ok: number; first_met: number; last_seen: number; pronoun: string }
@@ -120,11 +120,13 @@ export const isAlive = (store: Store) => now() - Number(store.get("alive_at", "0
 
 export class Store {
   readonly db: Database.Database;
+  /** 这位居民的目录：mind.db、self.md、books/、self_history/ 都在这里 */
+  readonly dir: string;
 
-  constructor(dbPath?: string) {
-    fs.mkdirSync(config.dataDir, { recursive: true });
-    fs.mkdirSync(config.booksDir, { recursive: true });
-    this.db = new Database(dbPath ?? config.dbPath);
+  constructor(dir: string = config.dataDir) {
+    this.dir = dir;
+    fs.mkdirSync(this.booksDir, { recursive: true });
+    this.db = new Database(path.join(dir, "mind.db"));
     this.db.pragma("journal_mode = WAL"); // 生活循环和本地聊天可能同时读写
     this.db.pragma("busy_timeout = 5000");
     this.db.exec(SCHEMA);
@@ -133,7 +135,16 @@ export class Store {
     this.addColumn("outbox", "kind", "TEXT NOT NULL DEFAULT 'outreach'"); // outreach 主动找人 / reply 回复
     this.addColumn("memories", "prev_content", "TEXT"); // 改写之前的样子
     this.addColumn("memories", "updated", "REAL");
-    if (!fs.existsSync(config.selfPath)) fs.writeFileSync(config.selfPath, SEED_SELF, "utf-8");
+    this.addColumn("memories", "present", "TEXT"); // 记下时在场的人（id 的 JSON 列表），宿舍里用
+    if (!fs.existsSync(this.selfPath)) fs.writeFileSync(this.selfPath, SEED_SELF, "utf-8");
+  }
+
+  get booksDir() {
+    return path.join(this.dir, "books");
+  }
+
+  get selfPath() {
+    return path.join(this.dir, "self.md");
   }
 
   close() {
@@ -190,11 +201,12 @@ export class Store {
   // ---------- 长期记忆 ----------
   // 记忆都是她的：在任何场合都能想起，说不说由她自己决定（DESIGN.md 10.6）。
 
-  remember(content: string, opts: { kind?: string; about?: string | null; channel?: string; private?: boolean; importance?: number } = {}): number {
+  remember(content: string, opts: { kind?: string; about?: string | null; channel?: string; private?: boolean; importance?: number; present?: unknown } = {}): number {
     const importance = Math.max(1, Math.min(5, opts.importance ?? 3));
     const info = this.db.prepare(
-      "INSERT INTO memories (ts, content, kind, about, channel, private, importance) VALUES (?,?,?,?,?,?,?)",
-    ).run(now(), content, opts.kind ?? "event", opts.about ?? null, opts.channel ?? "self", opts.private ? 1 : 0, importance);
+      "INSERT INTO memories (ts, content, kind, about, channel, private, importance, present) VALUES (?,?,?,?,?,?,?,?)",
+    ).run(now(), content, opts.kind ?? "event", opts.about ?? null, opts.channel ?? "self", opts.private ? 1 : 0, importance,
+      opts.present ? JSON.stringify(opts.present) : null);
     return Number(info.lastInsertRowid);
   }
 
@@ -383,16 +395,16 @@ export class Store {
   // ---------- 自我档案 ----------
 
   readSelf(): string {
-    return fs.readFileSync(config.selfPath, "utf-8");
+    return fs.readFileSync(this.selfPath, "utf-8");
   }
 
   /** 每次改写前留一份历史，这样能回看她是怎么一点点变过来的 */
   writeSelf(text: string) {
-    const history = path.join(config.dataDir, "self_history");
+    const history = path.join(this.dir, "self_history");
     fs.mkdirSync(history, { recursive: true });
     const d = new Date();
     const stamp = `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
     fs.writeFileSync(path.join(history, `${stamp}.md`), this.readSelf(), "utf-8");
-    fs.writeFileSync(config.selfPath, text, "utf-8");
+    fs.writeFileSync(this.selfPath, text, "utf-8");
   }
 }

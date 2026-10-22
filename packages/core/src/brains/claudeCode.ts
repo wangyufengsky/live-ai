@@ -42,7 +42,7 @@ async function run({ ctx, brain, prompt, effort, web }: ThinkArgs, url: string, 
     "--no-session-persistence",
   ];
 
-  const proc = spawn(config.claudeBin, cmd, { cwd: config.dataDir, stdio: ["ignore", "pipe", "pipe"] });
+  const proc = spawn(config.claudeBin, cmd, { cwd: ctx.store.dir, stdio: ["ignore", "pipe", "pipe"] });
   let stderr = "";
   proc.stderr.on("data", (d) => (stderr += d));
   let result: any;

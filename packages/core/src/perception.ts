@@ -7,7 +7,6 @@
  */
 
 import fs from "node:fs";
-import { config } from "./config.js";
 import { today } from "./energy.js";
 import type { Store } from "./store.js";
 
@@ -17,7 +16,7 @@ export type Sensor = (store: Store) => string[];
 
 export const bookshelf: Sensor = (store) => {
   const known = new Set((store.get("known_books") ?? "").split("\n").filter(Boolean));
-  const books = new Set(fs.readdirSync(config.booksDir).filter((f) => f.endsWith(".txt") || f.endsWith(".md")));
+  const books = new Set(fs.readdirSync(store.booksDir).filter((f) => f.endsWith(".txt") || f.endsWith(".md")));
   const added = [...books].filter((b) => !known.has(b)).sort();
   const removed = [...known].filter((b) => !books.has(b)).sort();
   if (!added.length && !removed.length) return [];

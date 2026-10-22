@@ -8,6 +8,7 @@
  *   companion chat --id me --name 小王  以某个身份和她私聊
  *   companion status                    看看她现在的状态
  *   companion visitor add <id> <名字>   给来访者（人或 AI）发一张通行证，让 ta 能通过 MCP 来找她聊天
+ *   companion dorm ...                  宿舍（见 dormCli.ts）
  *
  * 加 --brain 临时换大脑（名字见 config.BRAINS），比如 --brain claude_code。
  */
@@ -17,6 +18,7 @@ import { parseArgs } from "node:util";
 import { EnvHttpProxyAgent, setGlobalDispatcher } from "undici";
 import { BRAINS, config } from "./config.js";
 import { Energy } from "./energy.js";
+import { cmdDorm } from "./dormCli.js";
 import { closeHub, McpHub, startHub } from "./hub.js";
 import { chat, isAlive, runForever, sleep, wake } from "./life.js";
 import { fmtTs, Store } from "./store.js";
@@ -91,11 +93,22 @@ function cmdStatus(store: Store) {
 async function main() {
   const { values, positionals } = parseArgs({
     allowPositionals: true,
-    options: { brain: { type: "string" }, id: { type: "string" }, name: { type: "string" } },
+    options: {
+      brain: { type: "string" }, id: { type: "string" }, name: { type: "string" },
+      as: { type: "string" }, placeholder: { type: "string" }, dir: { type: "string" },
+    },
   });
   if (values.brain) {
     if (!BRAINS[values.brain]) throw new Error(`没有叫 ${values.brain} 的大脑，可选：${Object.keys(BRAINS).join(" / ")}`);
     config.brain = values.brain;
+  }
+  // 宿舍的命令不碰单人模式的 data/
+  if (positionals[0] === "dorm") {
+    try {
+      return await cmdDorm(positionals.slice(1), values);
+    } finally {
+      await closeHub();
+    }
   }
   const store = new Store();
   try {

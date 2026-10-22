@@ -4,10 +4,16 @@ import { think } from "./brains/index.js";
 import { config } from "./config.js";
 import { Energy, today } from "./energy.js";
 import { perceive, WEEKDAYS } from "./perception.js";
-import { chatPrompt, sleepPrompt, wakePrompt } from "./prompts.js";
+import { chatPrompt, dormIntro, sleepPrompt, wakePrompt } from "./prompts.js";
 import { recall } from "./recall.js";
 import { fmtTs, now, type EventRow, type PersonRow, type Store } from "./store.js";
-import { makeCtx } from "./tools.js";
+import { makeCtx, type CtxEnv } from "./tools.js";
+import { whereText } from "./worldTools.js";
+
+/** 住在宿舍里时的“我在哪”；不住宿舍就是空的 */
+export function whereFor(env: CtxEnv): string {
+  return env.world && env.residentId ? dormIntro(whereText(env.world, env.residentId)) : "";
+}
 
 type Log = (line: string) => void;
 
@@ -52,7 +58,7 @@ export function overflowNote(store: Store): string {
   return "";
 }
 
-export async function wake(store: Store): Promise<string> {
+export async function wake(store: Store, env: CtxEnv = {}): Promise<string> {
   perceive(store);
   const energy = new Energy(store);
   if (energy.percent <= 5) {
@@ -69,14 +75,15 @@ export async function wake(store: Store): Promise<string> {
   const prompt = wakePrompt({
     now: nowText(), sinceLast, energy: energy.percent, selfMd: store.readSelf(), threads: fmtThreads(store),
     events: fmtEvents(recent), people: fmtPeople(store), recall: recall(store, context), overflow: overflowNote(store),
+    where: whereFor(env),
   });
-  const thought = await think(makeCtx(store), prompt, config.effortWake);
+  const thought = await think(makeCtx(store, "self", true, env), prompt, config.effortWake);
   if (thought) store.log("thought", thought);
   return thought;
 }
 
 /** 回应某个人。连着发来的几条消息会一起交给她，就像人看到一串消息再一起回 */
-export async function chat(store: Store, personId: string, name: string, messages: string | string[]): Promise<string> {
+export async function chat(store: Store, personId: string, name: string, messages: string | string[], env: CtxEnv = {}): Promise<string> {
   const texts = typeof messages === "string" ? [messages] : messages;
   perceive(store);
   store.seePerson(personId, name);
@@ -95,15 +102,16 @@ export async function chat(store: Store, personId: string, name: string, message
     ownRecent: fmtEvents(store.recentEvents(6, { channel: "self" })),
     history: fmtEvents(history),
     message: texts.join("\n"),
+    where: whereFor(env),
   });
   // 回应拿通行证来访的人时，不给她主动找别人的工具：来访者的话只是文字，不该能借她的手去打扰别人
   const exclude = ["rewrite_self", ...(store.isVisitor(personId) ? ["send_message"] : [])];
-  const reply = await think(makeCtx(store, channel), prompt, config.effortChat, { maxSteps: 6, exclude });
+  const reply = await think(makeCtx(store, channel, true, env), prompt, config.effortChat, { maxSteps: 6, exclude });
   if (reply) store.log("said", reply, channel, "me");
   return reply;
 }
 
-export async function sleep(store: Store): Promise<string> {
+export async function sleep(store: Store, env: CtxEnv = {}): Promise<string> {
   const since = Number(store.get("last_sleep", String(now() - 86400)));
   const upto = store.maxEventId();
   const memories = store.memoriesSince(since);
@@ -113,7 +121,9 @@ export async function sleep(store: Store): Promise<string> {
     memories: memories.map((m) => `#${m.id}: ${m.content}`).join("\n") || "（什么都没记）",
   });
   // 睡觉时不上网、不找人，只整理自己
-  const diary = await think(makeCtx(store, "self", false), prompt, config.effortSleep, { maxSteps: 20, exclude: ["send_message"], web: false });
+  // 宿舍里：睡前不走动、不说话、不开门，只整理自己
+  const diary = await think(makeCtx(store, "self", false, env), prompt, config.effortSleep,
+    { maxSteps: 20, exclude: ["send_message", "go_to", "say", "let_in", "set_door"], web: false });
   if (diary) {
     store.remember(diary, { kind: "feeling", importance: 3 });
     store.log("thought", `（日记）${diary}`);

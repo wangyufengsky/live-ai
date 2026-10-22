@@ -33,10 +33,10 @@ const fill = (template: string, vars: Record<string, string | number>) =>
   template.replace(/\{(\w+)\}/g, (m, k: string) => (k in vars ? String(vars[k]) : m));
 
 export const wakePrompt = (v: {
-  now: string; sinceLast: string; energy: number; selfMd: string; threads: string; events: string; people: string; recall: string; overflow: string;
+  now: string; sinceLast: string; energy: number; selfMd: string; threads: string; events: string; people: string; recall: string; overflow: string; where: string;
 }) => fill(`现在是 {now}。你醒了。{sinceLast}
 精力还剩 {energy}%。
-
+{where}
 【我的档案】
 {selfMd}
 
@@ -53,9 +53,9 @@ export const wakePrompt = (v: {
 做完之后，用一两句话说说你此刻在想什么——这会作为你的念头留在最近的事里。`, v);
 
 export const chatPrompt = (v: {
-  now: string; energy: number; tired: string; selfMd: string; name: string; person: string; recall: string; ownRecent: string; history: string; message: string;
+  now: string; energy: number; tired: string; selfMd: string; name: string; person: string; recall: string; ownRecent: string; history: string; message: string; where: string;
 }) => fill(`现在是 {now}。精力还剩 {energy}%。{tired}
-
+{where}
 【我的档案】
 {selfMd}
 
@@ -93,3 +93,39 @@ export const sleepPrompt = (v: { now: string; selfMd: string; threads: string; e
 3. 看看线头：哪些还想继续，哪些可以放下或搁置。
 4. 今天见到的人，印象有没有变化？
 5. 最后，写一小段今天的日记，作为你最后说的话。`, v);
+
+/** 住在宿舍里时，醒来、聊天、说话前都会看到的一段（DESIGN.md 11.3） */
+export const dormIntro = (where: string) => `
+【宿舍】
+你住在一间宿舍里：有自己的房间，还有大家共用的客厅。在一个地方说的话（say），只有当时在场、醒着的人听得到；不在场的人不会知道。进别人的房间要敲门（go_to 过去，门关着就会变成敲门），由主人决定开不开；你的房间也一样。想看看周围用 look_around。
+${where}
+`;
+
+/** 客厅（或任何地方）里轮到她说话（11.5） */
+export const scenePrompt = (v: {
+  now: string; energy: number; selfMd: string; where: string; transcript: string; recall: string; reason: string;
+}) => fill(`现在是 {now}。精力还剩 {energy}%。
+{where}
+
+【我的档案】
+{selfMd}
+{recall}
+【这里刚才说的话】（只有你在场时听到的）
+{transcript}
+
+{reason}现在轮到你了。想说就直接说出来——你最后说出的话，在场的人都会听到，像平常说话一样，简短自然就好。
+不想说也完全可以，那就只回复：（不说）`, v);
+
+/** 有人在敲她的门 */
+export const knockPrompt = (v: { now: string; where: string; visitor: string; selfMd: string; recall: string }) => fill(`现在是 {now}。
+{where}
+
+【我的档案】
+{selfMd}
+{recall}
+{visitor}在敲你的门。
+
+开不开由你决定。想让 ta 进来，就用 let_in。不想开也没关系；你最后说的话会隔着门告诉 ta，什么都不想说就只回复：（不说）`, v);
+
+/** 她回的是不是“不说” */
+export const isPass = (text: string) => !text.trim() || /^[（(]?\s*不说\s*[）)]?[。.]?$/.test(text.trim());

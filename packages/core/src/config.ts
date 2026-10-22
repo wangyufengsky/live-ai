@@ -33,6 +33,8 @@ export const BRAINS: Record<string, Brain> = {
 
 export const config = {
   dataDir: process.env.COMPANION_DATA_DIR ?? path.join(ROOT, "data"),
+  /** 宿舍：world.db 和每位居民的目录（residents/<id>/）都在这里 */
+  dormDir: process.env.COMPANION_DORM_DIR ?? path.join(ROOT, "dorm"),
   brain: process.env.COMPANION_BRAIN ?? "deepseek",
   claudeBin: "claude",
   /** run 时 MCP 中枢监听的端口（只在 127.0.0.1 上）。来访者连这个端口 */
@@ -61,6 +63,12 @@ export const config = {
   visitorPerHour: 20,
   visitorPerDay: 100,
   visitorBacklog: 5,
+  /** 客厅主持人：攒多久再开始请人说话；没有人参与时 AI 之间最多连说几句；之后冷却多久（11.5，小王定 10 句 / 10 分钟） */
+  sceneBatchMs: 2000,
+  sceneAiLimit: 10,
+  sceneCooldownMin: 10,
+  /** 人多久没动静就算离开了宿舍 */
+  humanIdleMin: 30,
   /** 每次醒来带进上下文的最近事件条数（短期记忆） */
   recentEvents: 40,
 

@@ -10,24 +10,41 @@ import fs from "node:fs";
 import path from "node:path";
 import { config } from "./config.js";
 import { fmtTs, type MemoryRow, type Store } from "./store.js";
+import type { World } from "./world.js";
 import { memoryHints, writeBlocked } from "./text.js";
 import * as web from "./web.js";
 
 export interface Ctx {
   store: Store;
-  /** self / dm:<person> / group:<id> */
+  /** self / dm:<person> / place:<地点 id> */
   channel: string;
   allowOutreach: boolean;
+  /** 用哪个大脑（宿舍里每位居民各用各的）；不填就用 config.brain */
+  brain?: string;
+  /** 住在宿舍里时：世界和自己的居民 id。由框架认定，模型改不了 */
+  world?: World;
+  residentId?: string;
 }
 
-export const makeCtx = (store: Store, channel = "self", allowOutreach = true): Ctx => ({ store, channel, allowOutreach });
+export type CtxEnv = Partial<Pick<Ctx, "brain" | "world" | "residentId">>;
 
-type Args = Record<string, any>;
+export const makeCtx = (store: Store, channel = "self", allowOutreach = true, env: CtxEnv = {}): Ctx =>
+  ({ store, channel, allowOutreach, ...env });
+
+export type Args = Record<string, any>;
 type ToolFn = (ctx: Ctx, args: Args) => string | Promise<string>;
-interface ToolDef { fn: ToolFn; description: string; properties: Record<string, object>; required: string[] }
+export interface ToolDef { fn: ToolFn; description: string; properties: Record<string, object>; required: string[] }
+
+/** 宿舍里才有的工具（worldTools.ts 往这里登记），只给住在宿舍里的居民 */
+export const WORLD_TOOLS: Record<string, ToolDef> = {};
 
 /** 记忆的来历：她想起一件事时，也会想起是谁、在什么情况下告诉她的 */
 function provenance(store: Store, r: MemoryRow): string {
+  if (r.present) {
+    // 宿舍里：在哪、当时谁在场（11.8）
+    const p = JSON.parse(r.present) as { place: string; with: string[] };
+    return `（在${p.place}，${p.with.length ? `${p.with.join("、")}在场` : "只有我一个人"}）`;
+  }
   if (!r.private) return "";
   const who = r.channel.startsWith("dm:") ? store.person(r.channel.slice(3))?.name ?? r.channel.slice(3) : null;
   return who ? `（${who}私下跟我说的）` : "（私下听到的）";
@@ -72,11 +89,23 @@ export const TOOLS: Record<string, ToolDef> = {
       private: { type: "boolean", description: "是不是别人私下跟你说的。私聊里默认是" },
     },
     required: ["content"],
-    fn: ({ store, channel }, a) => {
+    fn: ({ store, channel, world, residentId }, a) => {
       guard(a.content);
+      // 住在宿舍里：记下当时在哪、谁在场。在房间里说的算私下，在客厅说的不算
+      let present: { place: string; with: string[] } | undefined;
+      let privateHere = channel.startsWith("dm:");
+      if (world && residentId) {
+        const place = world.place(world.location(residentId) ?? "");
+        if (place) {
+          present = { place: place.owner === residentId ? "我的房间" : place.name,
+            with: world.whoIsAt(place.id).filter((p) => p.entity !== residentId).map((p) => p.name) };
+          privateHere ||= place.kind === "room";
+        }
+      }
       const id = store.remember(a.content, {
         kind: a.kind ?? "event", about: a.about ?? null, channel,
-        private: a.private ?? channel.startsWith("dm:"), importance: a.importance ?? 3,
+        private: a.private ?? privateHere, importance: a.importance ?? 3,
+        present,
       });
       const hints = memoryHints(a.content, store.people().map((p) => p.name));
       return `记下了（#${id}）。` + (hints.length ? `\n提示：${hints.join("；")}。` : "");
@@ -200,11 +229,11 @@ export const TOOLS: Record<string, ToolDef> = {
     properties: {},
     required: [],
     fn: ({ store }) => {
-      const books = listBookFiles();
+      const books = listBookFiles(store);
       if (!books.length) return "书架是空的。";
       return books.map((b) => {
         const pos = Number(store.get(`bookmark:${b}`, "0"));
-        const total = codePoints(fs.readFileSync(path.join(config.booksDir, b), "utf-8")).length;
+        const total = codePoints(fs.readFileSync(path.join(store.booksDir, b), "utf-8")).length;
         return `${b}（读到 ${Math.floor((pos * 100) / Math.max(total, 1))}%）`;
       }).join("\n");
     },
@@ -214,9 +243,9 @@ export const TOOLS: Record<string, ToolDef> = {
     properties: { name: { type: "string", description: "书的文件名" }, restart: { type: "boolean", description: "从头读" } },
     required: ["name"],
     fn: ({ store, channel }, { name, restart }) => {
-      if (!listBookFiles().includes(name)) return `书架上没有《${name}》。`;
+      if (!listBookFiles(store).includes(name)) return `书架上没有《${name}》。`;
       // 书签按“字符”计，和 Python 版一致（不是 JS 的 UTF-16 码元）
-      const text = codePoints(fs.readFileSync(path.join(config.booksDir, name), "utf-8"));
+      const text = codePoints(fs.readFileSync(path.join(store.booksDir, name), "utf-8"));
       const key = `bookmark:${name}`;
       const pos = restart ? 0 : Number(store.get(key, "0"));
       if (pos >= text.length) return "已经读完了。想重读可以 restart=true。";
@@ -265,9 +294,9 @@ export const ANTHROPIC_SERVER_TOOLS = [
 export interface ToolSpec { name: string; description: string; input_schema: { type: "object"; properties: Record<string, object>; required: string[] } }
 
 /** web: null = 不上网；"local" = 用我们自己的 web_fetch；"anthropic" = 交给 Claude API 自带的（不在这里返回） */
-export function toolSpecs(exclude: string[] = [], web: "local" | "anthropic" | null = null): ToolSpec[] {
+export function toolSpecs(exclude: string[] = [], web: "local" | "anthropic" | null = null, withWorld = false): ToolSpec[] {
   const skip = new Set(web === "local" ? exclude : [...exclude, ...LOCAL_WEB_TOOLS]);
-  return Object.entries(TOOLS)
+  return Object.entries({ ...TOOLS, ...(withWorld ? WORLD_TOOLS : {}) })
     .filter(([name]) => !skip.has(name))
     .map(([name, t]) => ({ name, description: t.description, input_schema: { type: "object", properties: t.properties, required: t.required } }));
 }
@@ -282,7 +311,7 @@ export function brief(args: Args): string {
 
 /** 执行一个工具。出错不抛出，而是告诉她（第二个返回值 = 是否出错） */
 export async function runTool(ctx: Ctx, name: string, args: Args): Promise<[string, boolean]> {
-  const tool = TOOLS[name];
+  const tool = TOOLS[name] ?? (ctx.world ? WORLD_TOOLS[name] : undefined);
   if (!tool) return [`没有叫 ${name} 的工具。`, true];
   const missing = tool.required.filter((k) => !(k in args));
   if (missing.length) return [`缺少参数：${missing.join(", ")}`, true];
@@ -298,8 +327,8 @@ export async function runTool(ctx: Ctx, name: string, args: Args): Promise<[stri
   return [output, false];
 }
 
-function listBookFiles(): string[] {
-  return fs.readdirSync(config.booksDir).filter((f) => f.endsWith(".txt") || f.endsWith(".md")).sort();
+function listBookFiles(store: Store): string[] {
+  return fs.readdirSync(store.booksDir).filter((f) => f.endsWith(".txt") || f.endsWith(".md")).sort();
 }
 
 const codePoints = (s: string) => Array.from(s);

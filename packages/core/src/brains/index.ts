@@ -29,8 +29,9 @@ export interface ThinkOptions { maxSteps?: number; exclude?: string[]; web?: boo
 
 /** 跑一轮完整的思考，返回她最后说的话 */
 export function think(ctx: Ctx, prompt: string, effort: Effort, opts: ThinkOptions = {}): Promise<string> {
-  const brain = BRAINS[config.brain];
-  if (!brain) throw new Error(`没有叫 ${config.brain} 的大脑，可选：${Object.keys(BRAINS).join(" / ")}`);
+  const name = ctx.brain ?? config.brain;
+  const brain = BRAINS[name];
+  if (!brain) throw new Error(`没有叫 ${name} 的大脑，可选：${Object.keys(BRAINS).join(" / ")}`);
   return BACKENDS[brain.kind]({
     ctx, brain, prompt, effort,
     maxSteps: opts.maxSteps ?? config.maxStepsPerWake,
